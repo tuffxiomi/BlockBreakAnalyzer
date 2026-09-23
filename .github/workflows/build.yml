@@ -1,0 +1,135 @@
+name: Build BlockBreakAnalyzer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-28" \
+            "build-tools;35.0.0" \
+            "cmake;3.22.1" \
+            "ndk;28.2.13676358"
+
+      - name: Verify Android toolchain
+        run: |
+          test -f "$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake"
+          cmake --version
+          "$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++" \
+            --version
+
+      - name: Fetch preloader-android SDK
+        run: |
+          git clone \
+            --depth 1 \
+            --branch 0.2.2 \
+            https://github.com/LiteLDev/preloader-android.git \
+            /tmp/preloader-android
+
+          mkdir -p compat/preloader
+          cp -R /tmp/preloader-android/include compat/preloader/
+
+      - name: Verify project files
+        run: |
+          test -f CMakeLists.txt
+          test -f src/Api.cpp
+          test -f include/Analyzer.hpp
+          test -f include/Offsets.hpp
+          test -f include/Signatures.hpp
+          test -f assets/icon.png
+          test -f resources/minecraft.ttf
+          test -f levimod.json
+          test -d compat/preloader/include
+
+      - name: Configure ARM64 build
+        run: |
+          rm -rf build-android
+
+          cmake \
+            -S . \
+            -B build-android \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compile BlockBreakAnalyzer
+        run: |
+          cmake \
+            --build build-android \
+            --config Release \
+            --parallel 2
+
+      - name: Verify native library
+        run: |
+          test -f build-android/libBlockBreakAnalyzer.so
+
+          file build-android/libBlockBreakAnalyzer.so
+
+          readelf -h build-android/libBlockBreakAnalyzer.so
+
+          readelf -h build-android/libBlockBreakAnalyzer.so \
+            | grep -E "Class:|Machine:"
+
+      - name: Package LeviPack
+        run: |
+          python3 scripts/package_levipack.py \
+            --library build-android/libBlockBreakAnalyzer.so \
+            --icon assets/icon.png \
+            --font resources/minecraft.ttf \
+            --output BlockBreakAnalyzer.levipack
+
+      - name: Verify LeviPack
+        run: |
+          python3 tests/verify_package_layout.py \
+            BlockBreakAnalyzer.levipack
+
+          unzip -t BlockBreakAnalyzer.levipack
+
+      - name: Generate SHA256
+        run: |
+          sha256sum \
+            BlockBreakAnalyzer.levipack \
+            build-android/libBlockBreakAnalyzer.so \
+            > SHA256SUMS.txt
+
+      - name: Upload LeviPack
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlockBreakAnalyzer-arm64-v8a
+          path: |
+            BlockBreakAnalyzer.levipack
+            SHA256SUMS.txt
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlockBreakAnalyzer-so-arm64-v8a
+          path: build-android/libBlockBreakAnalyzer.so
