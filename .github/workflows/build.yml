@@ -10,118 +10,197 @@ on:
 permissions:
   contents: read
 
+env:
+  NDK_VERSION: "28.2.13676358"
+  ANDROID_PLATFORM: "android-28"
+
 jobs:
   build:
+    name: Build ARM64 LeviPack
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v7
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ""
 
-      - name: Install Android build tools
+      - name: Install Android dependencies
+        shell: bash
         run: |
+          set -euxo pipefail
+
           sdkmanager --install \
             "platform-tools" \
-            "platforms;android-28" \
+            "platforms;${ANDROID_PLATFORM}" \
             "build-tools;35.0.0" \
             "cmake;3.22.1" \
-            "ndk;28.2.13676358"
+            "ndk;${NDK_VERSION}"
 
-      - name: Verify Android toolchain
+      - name: Install build tools
         run: |
-          test -f "$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake"
+          sudo apt-get update
+          sudo apt-get install -y ninja-build unzip
+
+      - name: Configure Android environment
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+          echo "ANDROID_HOME=${ANDROID_HOME}"
+
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+          test -d "${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}"
+          test -f "${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
+
+      - name: Show tool versions
+        run: |
           cmake --version
-          "$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++" \
-            --version
+          ninja --version
+          python3 --version
+          "${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++" --version
 
-      - name: Fetch preloader-android SDK
+      - name: Verify project
+        shell: bash
         run: |
-          git clone \
-            --depth 1 \
-            --branch 0.2.2 \
-            https://github.com/LiteLDev/preloader-android.git \
-            /tmp/preloader-android
+          set -euxo pipefail
 
-          mkdir -p compat/preloader
-          cp -R /tmp/preloader-android/include compat/preloader/
-
-      - name: Verify project files
-        run: |
           test -f CMakeLists.txt
           test -f src/Api.cpp
           test -f include/Analyzer.hpp
           test -f include/Offsets.hpp
           test -f include/Signatures.hpp
-          test -f assets/icon.png
           test -f resources/minecraft.ttf
-          test -f levimod.json
-          test -d compat/preloader/include
+          test -f assets/icon.png
+          test -f scripts/package_levipack.py
 
-      - name: Configure ARM64 build
+      - name: Configure CMake
+        shell: bash
         run: |
+          set -euxo pipefail
+
           rm -rf build-android
 
           cmake \
             -S . \
             -B build-android \
             -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-28 \
+            -DANDROID_PLATFORM="${ANDROID_PLATFORM}" \
             -DANDROID_STL=c++_shared \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_CXX_STANDARD=20 \
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON
 
-      - name: Compile BlockBreakAnalyzer
+      - name: Build native library
+        shell: bash
         run: |
+          set -euxo pipefail
+
           cmake \
             --build build-android \
             --config Release \
             --parallel 2
 
-      - name: Verify native library
+      - name: Verify ARM64 library
+        shell: bash
         run: |
-          test -f build-android/libBlockBreakAnalyzer.so
+          set -euxo pipefail
 
-          file build-android/libBlockBreakAnalyzer.so
+          LIB="build-android/libBlockBreakAnalyzer.so"
 
-          readelf -h build-android/libBlockBreakAnalyzer.so
+          test -f "$LIB"
 
-          readelf -h build-android/libBlockBreakAnalyzer.so \
-            | grep -E "Class:|Machine:"
+          file "$LIB"
+
+          readelf -h "$LIB" | grep "Class:"
+          readelf -h "$LIB" | grep "Machine:"
+
+          readelf -d "$LIB" || true
 
       - name: Package LeviPack
+        shell: bash
         run: |
+          set -euxo pipefail
+
           python3 scripts/package_levipack.py \
             --library build-android/libBlockBreakAnalyzer.so \
             --icon assets/icon.png \
             --font resources/minecraft.ttf \
             --output BlockBreakAnalyzer.levipack
 
-      - name: Verify LeviPack
+          test -f BlockBreakAnalyzer.levipack
+
+      - name: Validate LeviPack
+        shell: bash
         run: |
-          python3 tests/verify_package_layout.py \
-            BlockBreakAnalyzer.levipack
+          set -euxo pipefail
 
           unzip -t BlockBreakAnalyzer.levipack
 
-      - name: Generate SHA256
+          python3 - <<'PY'
+          import json
+          import zipfile
+
+          package = "BlockBreakAnalyzer.levipack"
+
+          expected = {
+              "manifest.json",
+              "libBlockBreakAnalyzer.so",
+              "icon.png",
+              "resources/minecraft.ttf",
+          }
+
+          with zipfile.ZipFile(package, "r") as z:
+              actual = set(z.namelist())
+
+              if actual != expected:
+                  raise SystemExit(
+                      "Invalid package contents:\n"
+                      f"Expected: {sorted(expected)}\n"
+                      f"Actual:   {sorted(actual)}"
+                  )
+
+              manifest = json.loads(z.read("manifest.json"))
+
+              if manifest.get("type") != "preload-native":
+                  raise SystemExit("Invalid manifest type")
+
+              if manifest.get("entry") != "libBlockBreakAnalyzer.so":
+                  raise SystemExit("Invalid native entry")
+
+              for filename in expected:
+                  if z.getinfo(filename).file_size == 0:
+                      raise SystemExit(f"Empty package entry: {filename}")
+
+          print("LeviPack validation passed.")
+          PY
+
+      - name: Generate checksums
+        shell: bash
         run: |
           sha256sum \
             BlockBreakAnalyzer.levipack \
             build-android/libBlockBreakAnalyzer.so \
             > SHA256SUMS.txt
 
+          cat SHA256SUMS.txt
+
       - name: Upload LeviPack
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: BlockBreakAnalyzer-arm64-v8a
           path: |
@@ -129,7 +208,7 @@ jobs:
             SHA256SUMS.txt
 
       - name: Upload native library
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: BlockBreakAnalyzer-so-arm64-v8a
+          name: BlockBreakAnalyzer-native-arm64-v8a
           path: build-android/libBlockBreakAnalyzer.so
