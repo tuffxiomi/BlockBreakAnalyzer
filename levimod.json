@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "blockbreakanalyzer",
+  "version": "1.0.0",
+  "minecraft_versions": [
+    "1.26.51.XX"
+  ],
+  "info": {
+    "name": "Block Break Analyzer",
+    "author": "OpenAI",
+    "description": "Shows the targeted block, required tool, and live break-time estimate.",
+    "icon": "assets/icon.png",
+    "tags": [
+      "HUD",
+      "Utility",
+      "Developer"
+    ]
+  }
+}

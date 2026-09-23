@@ -1,0 +1,1 @@
+/usr/bin/c++ -fPIC -O3 -DNDEBUG -Wl,--allow-shlib-undefined -Wl,--dependency-file=CMakeFiles/BlockBreakAnalyzer.dir/link.d -shared -Wl,-soname,libBlockBreakAnalyzer.so -o libBlockBreakAnalyzer.so CMakeFiles/BlockBreakAnalyzer.dir/src/Api.cpp.o
